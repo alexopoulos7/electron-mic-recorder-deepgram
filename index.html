@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Microphone Recorder</title>
+  <script src="https://cdn.jsdelivr.net/npm/@deepgram/sdk"></script>
+
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      margin: 20px;
+      text-align: center;
+      background-color: #f5f5f5;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    }
+    h1 {
+      color: #333;
+    }
+    .controls {
+      margin-top: 30px;
+    }
+    button {
+      background-color: #4CAF50;
+      border: none;
+      color: white;
+      padding: 12px 24px;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+      font-size: 16px;
+      margin: 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background-color 0.3s;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    #stopBtn {
+      background-color: #f44336;
+    }
+    #stopBtn:hover {
+      background-color: #d32f2f;
+    }
+    #saveBtn {
+      background-color: #2196F3;
+    }
+    #saveBtn:hover {
+      background-color: #0b7dda;
+    }
+    #status {
+      margin-top: 20px;
+      font-size: 18px;
+      font-weight: bold;
+    }
+    #filePath {
+      margin-top: 15px;
+      font-size: 14px;
+      word-break: break-all;
+      color: #666;
+    }
+    #visualizer {
+      width: 100%;
+      height: 120px;
+      background-color: #f0f0f0;
+      margin-top: 20px;
+      border-radius: 4px;
+    }
+    #timer {
+      font-size: 24px;
+      margin-top: 10px;
+      color: #555;
+    }
+    /* Transcription box styles */
+    .transcription-container {
+      margin-top: 30px;
+      border-top: 1px solid #ddd;
+      padding-top: 20px;
+    }
+    #transcriptionBox {
+      width: 100%;
+      height: 150px;
+      padding: 12px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background-color: #f9f9f9;
+      font-size: 16px;
+      line-height: 1.5;
+      text-align: left;
+      resize: vertical;
+      overflow-y: auto;
+      margin-top: 10px;
+      font-family: inherit;
+    }
+    .transcription-title {
+      font-size: 18px;
+      margin-bottom: 10px;
+      color: #333;
+    }
+    .interim {
+      color: #888;
+      font-style: italic;
+    }
+    .final {
+      color: #000;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Microphone Recorder</h1>
+    <p>Record audio from your microphone and save it as a WAV file.</p>
+    
+    <div id="timer">00:00</div>
+    <canvas id="visualizer"></canvas>
+    
+    <div class="controls">
+      <button id="startBtn">Start Recording</button>
+      <button id="stopBtn" disabled>Stop Recording</button>
+      <button id="saveBtn" disabled>Save Recording</button>
+    </div>
+    
+    <div id="status">Ready to record</div>
+    <div id="filePath"></div>
+    
+    <!-- Transcription Display -->
+    <div class="transcription-container">
+      <div class="transcription-title">Live Transcription</div>
+      <div id="transcriptionBox"></div>
+    </div>
+  </div>
+  
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const saveBtn = document.getElementById('saveBtn');
+      const status = document.getElementById('status');
+      const filePath = document.getElementById('filePath');
+      const visualizer = document.getElementById('visualizer');
+      const timerDisplay = document.getElementById('timer');
+      const transcriptionBox = document.getElementById('transcriptionBox');
+      let isFinals = [];
+      let currentInterim = "";
+      let completeTranscript = "";
+
+      const { createClient, LiveTranscriptionEvents } = deepgram
+      const _deepgram = createClient(process.env.DEEPGRAM_API_KEY || '');
+      const connection = _deepgram.listen.live({
+        punctuate: true,
+        language: 'en',
+        model: 'nova-2',
+        smart_format: true,
+        interim_results: true,
+        endpointing: 300
+      }); 
+      let keepAliveInterval = null;
+
+      // Function to update the transcription display
+      function updateTranscription(text, isFinal) {
+        if (isFinal) {
+          // Add to complete transcript with proper spacing
+          if (completeTranscript && !completeTranscript.endsWith(" ")) {
+            completeTranscript += " ";
+          }
+          completeTranscript += text;
+          currentInterim = "";
+        } else {
+          currentInterim = text;
+        }
+        
+        // Update the display
+        transcriptionBox.innerHTML = `
+          <span class="final">${completeTranscript}</span>
+          <span class="interim">${currentInterim}</span>
+        `;
+        
+        // Auto-scroll to bottom
+        transcriptionBox.scrollTop = transcriptionBox.scrollHeight;
+      }
+
+      let startKeepAlive = () => {
+        if (keepAliveInterval) {
+          clearInterval(keepAliveInterval);
+        }
+        
+        keepAliveInterval = setInterval(() => {
+          if (connection?.getReadyState() === WebSocket.OPEN) {
+            console.log("Deepgram: Keeping connection alive");
+            connection.keepAlive();
+          }
+        }, 1000);
+      };
+      
+      // Set up event listeners
+      connection.on(LiveTranscriptionEvents.Open, () => {
+        startKeepAlive();
+         
+        // Listen for transcript events
+        connection.on(LiveTranscriptionEvents.Transcript, (data) => {
+          if (data.channel && data.channel.alternatives && data.channel.alternatives[0]) {
+            const transcript = data.channel.alternatives[0].transcript;
+            if (transcript) {
+              console.log('[LiveTranscription] Transcript:', transcript);
+              
+              // Update the transcription display
+              updateTranscription(transcript, data.is_final);
+              
+              if (typeof window.electronAPI !== 'undefined' && window.electronAPI.sendTranscriptionResult) {
+                window.electronAPI.sendTranscriptionResult(transcript);
+              }
+              
+              if (data.is_final) {
+                isFinals.push(transcript);
+                
+                if (data.speech_final) {
+                  const utterance = isFinals.join(" ");
+                  console.log(`Speech Final: ${utterance}`);
+                  isFinals = [];
+                }
+              }
+            }
+          }
+        });
+        
+        // Set up other event listeners
+        connection.on(LiveTranscriptionEvents.Error, (error) => {
+          console.error('[LiveTranscription] Deepgram error:', error);
+        });
+        
+        connection.on(LiveTranscriptionEvents.Close, () => {
+          console.log('Deepgram connection closed');
+        });
+        
+        connection.on(LiveTranscriptionEvents.Warning, (warning) => {
+          console.warn('[LiveTranscription] Deepgram warning:', warning);
+        });
+        
+        connection.on(LiveTranscriptionEvents.Metadata, (metadata) => {
+          console.log('Deepgram metadata:', metadata);
+        });
+      });
+      
+      let mediaRecorder;
+      let audioChunks = [];
+      let audioBlob;
+      let startTime;
+      let timerInterval;
+      let audioContext;
+      let analyser;
+      let canvasCtx = visualizer.getContext('2d');
+      
+      // Set up visualizer canvas
+      visualizer.width = visualizer.offsetWidth;
+      visualizer.height = visualizer.offsetHeight;
+      
+      // Update timer display
+      function updateTimer() {
+        const now = Date.now();
+        const diff = now - startTime;
+        const seconds = Math.floor(diff / 1000) % 60;
+        const minutes = Math.floor(diff / 60000);
+        timerDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+      }
+      
+      // Draw audio visualization
+      function drawVisualizer() {
+        if (!analyser) return;
+        
+        requestAnimationFrame(drawVisualizer);
+        
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        analyser.getByteFrequencyData(dataArray);
+        
+        canvasCtx.fillStyle = '#f0f0f0';
+        canvasCtx.fillRect(0, 0, visualizer.width, visualizer.height);
+        
+        const barWidth = (visualizer.width / bufferLength) * 2.5;
+        let x = 0;
+        
+        for (let i = 0; i < bufferLength; i++) {
+          const barHeight = dataArray[i] / 255 * visualizer.height;
+          
+          canvasCtx.fillStyle = `rgb(${dataArray[i]}, 150, 100)`;
+          canvasCtx.fillRect(x, visualizer.height - barHeight, barWidth, barHeight);
+          
+          x += barWidth + 1;
+        }
+      }
+      
+      startBtn.addEventListener('click', async () => {
+        try {
+          // Clear transcription when starting a new recording
+          transcriptionBox.innerHTML = '';
+          completeTranscript = "";
+          currentInterim = "";
+          
+          // Request access to the microphone
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          
+          // Set up audio context for visualization
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          const source = audioContext.createMediaStreamSource(stream);
+          analyser = audioContext.createAnalyser();
+          analyser.fftSize = 256;
+          source.connect(analyser);
+          
+          // Start visualization
+          drawVisualizer();
+          
+          // Set up media recorder with specific timeslice
+          const options = { mimeType: 'audio/webm' };
+          mediaRecorder = new MediaRecorder(stream, options);
+          
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+              console.log(`Data available: ${event.data.size} bytes`);
+              connection.send(event.data);
+              audioChunks.push(event.data);
+            }
+          };
+          
+          mediaRecorder.onstop = () => {
+            audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+            clearInterval(timerInterval);
+            saveBtn.disabled = false;
+          };
+          
+          // Start recording with 100ms timeslice to get frequent updates
+          audioChunks = [];
+          mediaRecorder.start(100);
+          console.log("MediaRecorder started with 100ms timeslice");
+          
+          startTime = Date.now();
+          timerInterval = setInterval(updateTimer, 1000);
+          
+          // Update UI
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+          saveBtn.disabled = true;
+          status.textContent = 'Recording...';
+          filePath.textContent = '';
+          
+        } catch (error) {
+          status.textContent = `Error: ${error.message}`;
+          console.error('Recording error:', error);
+        }
+      });
+      
+      stopBtn.addEventListener('click', () => {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+          mediaRecorder.stream.getTracks().forEach(track => track.stop());
+          
+          // Update UI
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+          status.textContent = 'Recording stopped. Click Save to save the file.';
+        }
+      });
+      
+      saveBtn.addEventListener('click', async () => {
+        if (!audioBlob) {
+          status.textContent = 'No recording to save.';
+          return;
+        }
+        
+        try {
+          // Convert blob to ArrayBuffer to send to the main process
+          const arrayBuffer = await audioBlob.arrayBuffer();
+          
+          // Save file using Electron's dialog
+          const result = await window.electronAPI.saveAudioFile(arrayBuffer);
+          
+          if (result.success) {
+            status.textContent = 'Recording saved!';
+            filePath.textContent = `Saved to: ${result.filePath}`;
+          } else {
+            status.textContent = `Error: ${result.message}`;
+          }
+        } catch (error) {
+          status.textContent = `Error: ${error.message}`;
+          console.error('Save error:', error);
+        }
+      });
+    });
+  </script>
+</body>
+</html>

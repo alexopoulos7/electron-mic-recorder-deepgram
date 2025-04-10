@@ -1,0 +1,14 @@
+{
+  "name": "electron-mic-recorder",
+  "version": "1.0.0",
+  "description": "Electron app to record audio from microphone using Web APIs",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0"
+  }
+}
